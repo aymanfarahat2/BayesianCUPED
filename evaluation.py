@@ -1,21 +1,13 @@
 """
-Monte Carlo evaluation harness.
+Monte Carlo evaluation harness for the Bayesian CUPED paper.
 
-For each simulation we record (τ̂, SE, covers_true) for every estimator.
-Across S simulations the summary table reports:
-
-  Bias         = mean(τ̂) − τ_true
-  Empirical SD = sd(τ̂)                  (Monte Carlo variability)
-  Mean SE      = mean(SE)                (average analytic SE)
-  SE/SD ratio  = Mean SE / Empirical SD  (should be ≈ 1 if SE is well-calibrated)
-  RMSE         = √(mean((τ̂ − τ_true)²))
-  Coverage     = fraction of 95 % CIs that contain τ_true  (should be ≈ 0.95)
-  Power        = fraction of 95 % CIs that exclude 0
+Runs B replications of all fast estimators (E1–E4), collects
+bias, variance, RMSE, MAE, CI width, coverage, and relative efficiency.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -24,155 +16,96 @@ from config import SimulationConfig
 from simulation import simulate_user_level_data
 from estimators import (
     EstimatorResult,
-    diff_in_means,
-    cuped_estimator,
-    cuped_stratified,
-    bayesian_estimator,
+    naive_dim, cuped_ols, stratified_ols, eb_cuped, cuped_matching_vwatt,
 )
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Single simulation
-# ═══════════════════════════════════════════════════════════════════════════
-
-def run_single_simulation(
-    cfg: SimulationConfig, seed: int,
+def run_single_sim(
+    cfg: SimulationConfig, rng: np.random.Generator,
 ) -> Dict[str, EstimatorResult]:
-    """
-    Generate one dataset and compute every estimator.
-
-    Returns a dict of EstimatorResult keyed by estimator name.
-    When p_new_users == 0, the stratified results collapse to plain CUPED.
-    """
-    rng = np.random.default_rng(seed)
+    """Simulate one dataset and run E1–E4."""
     data = simulate_user_level_data(cfg, rng)
-
-    results: Dict[str, EstimatorResult] = {}
-
-    # 1. Naive diff-in-means (all users)
-    results["naive"] = diff_in_means(data, label="naive")
-
-    # 2. Bayesian (all users, on raw Y)
-    results["bayes"] = bayesian_estimator(data, cfg, label="bayes")
-
-    # 3. CUPED / Stratified CUPED
-    has_new = data["Y_pre"].isna().any()
-
-    if has_new:
-        strat = cuped_stratified(data)
-        results["cuped_returning"] = strat.returning
-        results["cuped_new"] = strat.new
-        results["cuped_population"] = strat.population
-        results["cuped_precision"] = strat.precision
-    else:
-        res_cuped = cuped_estimator(data)
-        results["cuped_returning"] = res_cuped
-        results["cuped_population"] = EstimatorResult(
-            label="cuped_population", tau_hat=res_cuped.tau_hat,
-            se=res_cuped.se, n=res_cuped.n)
-        results["cuped_precision"] = EstimatorResult(
-            label="cuped_precision", tau_hat=res_cuped.tau_hat,
-            se=res_cuped.se, n=res_cuped.n)
-
-    return results
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Flatten one simulation into a row dict
-# ═══════════════════════════════════════════════════════════════════════════
-
-def _flatten(results: Dict[str, EstimatorResult],
-             cfg: SimulationConfig) -> Dict[str, float]:
-    """Flatten estimator results into a flat dict for DataFrame storage."""
-    row: Dict[str, float] = {"tau_true": cfg.tau_true}
-    for name, r in results.items():
-        row[f"{name}_tau"] = r.tau_hat
-        row[f"{name}_se"] = r.se
-        row[f"{name}_covers"] = float(r.covers(cfg.tau_true))
-        row[f"{name}_rejects"] = float(r.rejects_null)
-    return row
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Summary across simulations
-# ═══════════════════════════════════════════════════════════════════════════
-
-def _summarize_one(tau_col: np.ndarray, se_col: np.ndarray,
-                   covers_col: np.ndarray, rejects_col: np.ndarray,
-                   tau_true: float) -> Dict[str, float]:
-    valid = np.isfinite(tau_col)
-    tau = tau_col[valid]
-    se = se_col[valid]
-    cov = covers_col[valid]
-    rej = rejects_col[valid]
-    if len(tau) == 0:
-        return {k: float("nan") for k in
-                ["bias", "empirical_sd", "mean_se", "se_sd_ratio",
-                 "rmse", "coverage", "power"]}
-    bias = float(tau.mean() - tau_true)
-    emp_sd = float(tau.std(ddof=1))
-    mean_se = float(se.mean())
-    ratio = mean_se / emp_sd if emp_sd > 0 else float("inf")
-    rmse = float(np.sqrt(((tau - tau_true) ** 2).mean()))
-    coverage = float(cov.mean())
-    power = float(rej.mean())
+    res_naive = naive_dim(data)
+    res_cuped = cuped_ols(data)
+    res_strat = stratified_ols(data)
+    res_eb, _ = eb_cuped(data)
     return {
-        "bias": bias,
-        "empirical_sd": emp_sd,
-        "mean_se": mean_se,
-        "se_sd_ratio": ratio,
-        "rmse": rmse,
-        "coverage": coverage,
-        "power": power,
+        res_naive.label: res_naive,
+        res_cuped.label: res_cuped,
+        res_strat.label: res_strat,
+        res_eb.label: res_eb,
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Main driver
-# ═══════════════════════════════════════════════════════════════════════════
-
-def run_simulations(
+def run_monte_carlo(
     cfg: SimulationConfig,
-    n_sim: int = 1000,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    B: int = 300,
+    seed: Optional[int] = None,
+    progress: bool = True,
+) -> pd.DataFrame:
     """
-    Run *n_sim* Monte Carlo replications.
+    Run B replications and return a summary DataFrame.
 
-    Returns
-    -------
-    df : pd.DataFrame
-        One row per simulation; columns  <est>_tau, <est>_se, <est>_covers, <est>_rejects.
-    summary : pd.DataFrame
-        One row per estimator; columns bias, empirical_sd, mean_se, se_sd_ratio, rmse, coverage, power.
+    Columns: Estimator, Bias, Variance, RMSE, MAE, Mean_SE, Coverage, RE, Mean_CI_Width
     """
-    base_rng = np.random.default_rng(cfg.random_seed)
-    seeds = base_rng.integers(0, 2**32 - 1, size=n_sim)
+    base_seed = seed if seed is not None else cfg.random_seed
+    tau_star = cfg.true_pate()
 
-    rows: List[Dict[str, float]] = []
-    for i, s in enumerate(seeds, start=1):
-        res = run_single_simulation(cfg, int(s))
-        row = _flatten(res, cfg)
-        row["sim"] = float(i)
-        rows.append(row)
+    records: Dict[str, List] = {}
 
-    df = pd.DataFrame(rows)
+    for b in range(B):
+        if progress and (b + 1) % 50 == 0:
+            print(f"  replication {b + 1}/{B}")
+        rng = np.random.default_rng(base_seed + b)
+        results = run_single_sim(cfg, rng)
+        for label, r in results.items():
+            if label not in records:
+                records[label] = []
+            records[label].append({
+                "tau_hat": r.tau_hat,
+                "se": r.se,
+                "ci_lower": r.ci_lower,
+                "ci_upper": r.ci_upper,
+                "covers": r.covers(tau_star),
+            })
 
-    estimator_names = ["naive", "cuped_returning", "cuped_population",
-                       "cuped_precision", "bayes"]
-    if cfg.p_new_users > 0:
-        estimator_names.insert(2, "cuped_new")
+    # Summarize
+    rows = []
+    naive_var = None
 
-    summary_rows = {}
-    for name in estimator_names:
-        tc = f"{name}_tau"
-        sc = f"{name}_se"
-        cc = f"{name}_covers"
-        rc = f"{name}_rejects"
-        if tc in df.columns:
-            summary_rows[name] = _summarize_one(
-                df[tc].values, df[sc].values,
-                df[cc].values, df[rc].values,
-                cfg.tau_true)
+    for label in ["Naive DIM", "CUPED OLS", "Stratified OLS", "EB CUPED"]:
+        if label not in records:
+            continue
+        recs = records[label]
+        tau_hats = np.array([r["tau_hat"] for r in recs])
+        ses = np.array([r["se"] for r in recs])
+        covers = np.array([r["covers"] for r in recs])
+        ci_widths = np.array([r["ci_upper"] - r["ci_lower"] for r in recs])
 
-    summary = pd.DataFrame.from_dict(summary_rows, orient="index")
-    return df, summary
+        bias = float(np.mean(tau_hats - tau_star))
+        variance = float(np.var(tau_hats, ddof=1))
+        rmse = float(np.sqrt(bias**2 + variance))
+        mae = float(np.mean(np.abs(tau_hats - tau_star)))
+        mean_se = float(np.mean(ses))
+        se_sd_ratio = mean_se / np.std(tau_hats, ddof=1) if np.std(tau_hats, ddof=1) > 0 else float("nan")
+        coverage = float(np.mean(covers))
+        ci_width = float(np.mean(ci_widths))
+
+        if label == "Naive DIM":
+            naive_var = variance
+        re = naive_var / variance if (naive_var is not None and variance > 0) else 1.0
+
+        rows.append({
+            "Estimator": label,
+            "Bias": bias,
+            "Variance": variance,
+            "RMSE": rmse,
+            "MAE": mae,
+            "Mean_SE": mean_se,
+            "SE/SD": se_sd_ratio,
+            "Coverage": coverage,
+            "RE vs Naive": re,
+            "Mean_CI_Width": ci_width,
+        })
+
+    return pd.DataFrame(rows).set_index("Estimator")

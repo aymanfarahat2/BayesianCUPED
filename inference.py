@@ -1,30 +1,18 @@
 """
 Single-experiment analysis — the primary use case.
 
-Given one dataset (simulated or real), produce:
+Given one dataset, produce a full experiment report with:
+  - Stratum-level estimates (raw, shrunk, shrinkage factor)
+  - Overall ATE (VWATT via CUPED, PATE via EB CUPED)
+  - Point estimate, SE, CI, t-stat, p-value for every row
+  - Naive DIM as benchmark
 
-  1. Treatment effect on EXISTING (returning) users  — CUPED-adjusted
-  2. Treatment effect on NEW users                    — diff-in-means
-  3. Overall average treatment effect (ATE)           — population-weighted
-
-Each with: τ̂, SE, 95% CI, t-stat, p-value.
-
-Usage from command line:
-    python inference.py                          # simulate with defaults
-    python inference.py --p_new_users 0.3        # override a parameter
-
-Usage from Python:
-    from inference import experiment_report
-    report = experiment_report(data)             # your own DataFrame
-    print(report)
-
-    from inference import analyze                # simulate + report
-    table = analyze(cfg, seed=42)
+Reference: Farahat (2026), Sections 2–4.
 """
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -32,32 +20,11 @@ import pandas as pd
 from config import SimulationConfig
 from simulation import simulate_user_level_data
 from estimators import (
-    EstimatorResult,
-    StratifiedResult,
-    diff_in_means,
-    cuped_estimator,
-    cuped_stratified,
-    bayesian_estimator,
+    EstimatorResult, StratumResult,
+    naive_dim, cuped_ols, stratified_ols,
+    cuped_matching_vwatt, eb_cuped, bayesian_mcmc,
+    _compute_stratum_stats,
 )
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Row builder
-# ═══════════════════════════════════════════════════════════════════════════
-
-def _result_to_row(name: str, r: EstimatorResult, method: str) -> Dict:
-    return {
-        "Group": name,
-        "Method": method,
-        "τ̂": r.tau_hat,
-        "SE": r.se,
-        "95% CI lower": r.ci_lower,
-        "95% CI upper": r.ci_upper,
-        "t-stat": r.t_stat,
-        "p-value": r.p_value,
-        "Signif": _stars(r.p_value),
-        "n": r.n,
-    }
 
 
 def _stars(p: float) -> str:
@@ -72,195 +39,159 @@ def _stars(p: float) -> str:
     return ""
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Primary entry point: experiment report
-# ═══════════════════════════════════════════════════════════════════════════
+def _result_row(label: str, method: str, r: EstimatorResult) -> dict:
+    return {
+        "Group": label,
+        "Method": method,
+        "τ̂": r.tau_hat,
+        "SE": r.se,
+        "95% CI lower": r.ci_lower,
+        "95% CI upper": r.ci_upper,
+        "t-stat": r.t_stat,
+        "p-value": r.p_value,
+        "Sig.": _stars(r.p_value),
+        "n": r.n,
+    }
 
+
+# ===================================================================
+# Experiment report — the main entry point
+# ===================================================================
 def experiment_report(
     data: pd.DataFrame,
     cfg: Optional[SimulationConfig] = None,
+    run_mcmc: bool = False,
+    mcmc_kwargs: Optional[dict] = None,
 ) -> pd.DataFrame:
     """
-    Analyze a single experiment.
+    Produce a comprehensive experiment report.
 
-    Returns a DataFrame with one row per quantity of interest:
-      - Existing (returning) users: CUPED if Y_pre available, else diff-in-means
-      - New users:                  diff-in-means (only if new users exist)
-      - Overall ATE:                population-weighted combination (or CUPED if no new users)
+    Rows:
+      - Stratum-level raw and EB-shrunk estimates
+      - VWATT (CUPED matching, Theorem 1)
+      - PATE (EB CUPED, Algorithm 1)
+      - Naive DIM (benchmark)
+      - Optionally: Bayesian MCMC
 
-    Each row carries: τ̂, SE, 95% CI, t-stat, p-value, significance stars.
-
-    Parameters
-    ----------
-    data : pd.DataFrame
-        Must have columns 'D' (treatment 0/1), 'Y' (outcome), 'Y_pre' (pre-period, NaN for new).
-    cfg : SimulationConfig, optional
-        Only needed if you want the Bayesian estimator row.  If None, Bayesian row is skipped.
+    Returns a styled-ready DataFrame.
     """
     rows = []
-    has_new = data["Y_pre"].isna().any()
-    has_returning = data["Y_pre"].notna().any()
 
-    if has_new and has_returning:
-        strat = cuped_stratified(data)
+    # --- E1: Naive ---
+    res_naive = naive_dim(data)
 
-        rows.append(_result_to_row(
-            "Existing users", strat.returning, "CUPED (OLS)"))
-        rows.append(_result_to_row(
-            "New users", strat.new, "Diff-in-means"))
-        rows.append(_result_to_row(
-            "Overall ATE (pop-weighted)", strat.population, "Stratified CUPED"))
-        rows.append(_result_to_row(
-            "Overall ATE (precision-weighted)", strat.precision, "Stratified CUPED"))
+    # --- E2: CUPED OLS ---
+    res_cuped = cuped_ols(data)
 
-    elif has_returning:
-        res_cuped = cuped_estimator(data)
-        rows.append(_result_to_row(
-            "All users (no new users)", res_cuped, "CUPED (OLS)"))
+    # --- E3: Stratified OLS ---
+    res_strat = stratified_ols(data)
 
-    else:
-        res_naive = diff_in_means(data, label="naive")
-        rows.append(_result_to_row(
-            "All users (no Y_pre)", res_naive, "Diff-in-means"))
+    # --- CUPED matching (Theorem 1, VWATT) ---
+    res_match, sr_match = cuped_matching_vwatt(data)
 
-    # Naive on full population for reference
-    rows.append(_result_to_row(
-        "Naive (all users, no CUPED)", diff_in_means(data, label="naive"), "Diff-in-means"))
+    # --- E4: EB CUPED (Algorithm 1, PATE) ---
+    res_eb, sr_eb = eb_cuped(data)
 
-    # Optional Bayesian
-    if cfg is not None:
-        rows.append(_result_to_row(
-            "Bayesian (all users)", bayesian_estimator(data, cfg), "Normal-normal"))
+    # Stratum-level rows
+    K = len(sr_eb.tau_k_raw)
+    for k in range(K):
+        rows.append({
+            "Group": f"Stratum {k}",
+            "Method": "Within-stratum DIM",
+            "τ̂_raw": sr_eb.tau_k_raw[k],
+            "SE_raw": sr_eb.se_k[k],
+            "τ̂_EB": sr_eb.tau_k_shrunk[k],
+            "B_k": sr_eb.B_k[k],
+            "λ_k (VWATT wt)": sr_match.lambda_k[k],
+            "w_k (pop wt)": sr_eb.w_k[k],
+            "n_k": int(sr_eb.n_k[k]),
+        })
 
-    table = pd.DataFrame(rows).set_index("Group")
-    return table
+    stratum_df = pd.DataFrame(rows)
 
+    # Summary rows
+    summary_rows = []
+    summary_rows.append(_result_row("VWATT (Theorem 1)", "CUPED matching", res_match))
+    summary_rows.append(_result_row("CUPED OLS (E2)", "OLS Y ~ D + X", res_cuped))
+    summary_rows.append(_result_row("Stratified OLS (E3)", "OLS Y ~ D + strata", res_strat))
+    summary_rows.append(_result_row("PATE — EB CUPED (E4)", "EB shrinkage", res_eb))
+    summary_rows.append(_result_row("Naive DIM (E1)", "ȳ_T - ȳ_C", res_naive))
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Full detail table (all estimators, flat)
-# ═══════════════════════════════════════════════════════════════════════════
+    if run_mcmc:
+        kw = mcmc_kwargs or {}
+        res_mcmc, mcmc_detail = bayesian_mcmc(data, **kw)
+        summary_rows.append(_result_row("PATE — Bayesian MCMC (E5)", "Hierarchical", res_mcmc))
 
-def inference_table(
-    data: pd.DataFrame,
-    cfg: SimulationConfig,
-) -> pd.DataFrame:
-    """
-    Run all estimators on a single DataFrame and return a detailed table.
-    This is the supplementary view — everything in one flat table.
-    """
-    rows = []
-    rows.append(_result_to_row("Naive (all)", diff_in_means(data), "Diff-in-means"))
+    summary_df = pd.DataFrame(summary_rows).set_index("Group")
 
-    has_new = data["Y_pre"].isna().any()
-    if has_new:
-        strat = cuped_stratified(data)
-        rows.append(_result_to_row("CUPED — returning", strat.returning, "CUPED OLS"))
-        rows.append(_result_to_row("Diff-in-means — new", strat.new, "Diff-in-means"))
-        rows.append(_result_to_row("CUPED — pop-weighted", strat.population, "Stratified"))
-        rows.append(_result_to_row("CUPED — prec-weighted", strat.precision, "Stratified"))
-    else:
-        rows.append(_result_to_row("CUPED (all)", cuped_estimator(data), "CUPED OLS"))
-
-    rows.append(_result_to_row("Bayesian", bayesian_estimator(data, cfg), "Normal-normal"))
-    return pd.DataFrame(rows).set_index("Group")
+    return stratum_df, summary_df
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Console analysis
-# ═══════════════════════════════════════════════════════════════════════════
-
-_FMT = {
-    "τ̂": "{:.6f}",
-    "SE": "{:.6f}",
-    "95% CI lower": "{:.6f}",
-    "95% CI upper": "{:.6f}",
-    "t-stat": "{:.3f}",
-    "p-value": "{:.4f}",
-    "n": "{:.0f}",
-}
-_FORMATTERS = {k: v.format for k, v in _FMT.items()}
-
-
+# ===================================================================
+# Console utility
+# ===================================================================
 def analyze(
     cfg: Optional[SimulationConfig] = None,
-    seed: int = 42,
+    seed: Optional[int] = None,
     data: Optional[pd.DataFrame] = None,
-) -> pd.DataFrame:
-    """
-    Primary single-experiment workflow: simulate (or accept) data, print the report.
-
-    Returns the experiment_report DataFrame.
-    """
+    run_mcmc: bool = False,
+):
+    """Simulate or accept data, then print the experiment report."""
     if cfg is None:
-        cfg = SimulationConfig()
+        from config import paper_default
+        cfg = paper_default()
 
     if data is None:
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(seed or cfg.random_seed)
         data = simulate_user_level_data(cfg, rng)
 
-    n = len(data)
-    n_treated = int(data["D"].sum())
-    n_new = int(data["Y_pre"].isna().sum())
-    n_ret = n - n_new
+    stratum_df, summary_df = experiment_report(data, cfg, run_mcmc=run_mcmc)
 
-    print("=" * 78)
-    print("  EXPERIMENT REPORT — Treatment Effect Analysis")
-    print("=" * 78)
-    print(f"\n  Total users     : {n:,}")
-    print(f"  Treated / Control: {n_treated:,} / {n - n_treated:,}")
-    print(f"  Returning users  : {n_ret:,}  ({100 * n_ret / n:.1f}%)")
-    print(f"  New users        : {n_new:,}  ({100 * n_new / n:.1f}%)")
+    print("\n" + "=" * 80)
+    print("EXPERIMENT REPORT — Bayesian CUPED Pipeline")
+    print("=" * 80)
 
-    if hasattr(cfg, "tau_true"):
-        rho = cfg.effective_autocorrelation()
-        print(f"\n  [DGP] true τ = {cfg.tau_true},  ρ(Y_pre, Y) ≈ {rho:.4f}")
+    print("\n--- Stratum-level estimates ---")
+    pd.set_option("display.float_format", "{:.4f}".format)
+    pd.set_option("display.max_columns", 20)
+    pd.set_option("display.width", 120)
+    print(stratum_df.to_string(index=False))
 
-    report = experiment_report(data, cfg)
+    print(f"\n  μ̂_τ (precision-weighted global mean) = "
+          f"{stratum_df['τ̂_raw'].values @ (1/stratum_df['SE_raw'].values**2) / (1/stratum_df['SE_raw'].values**2).sum():.4f}")
 
-    print("\n" + "─" * 78)
-    print("  RESULTS")
-    print("─" * 78 + "\n")
-    print(report.to_string(formatters=_FORMATTERS))
-    print("\n  Signif. codes:  *** p<0.001  ** p<0.01  * p<0.05  . p<0.10")
+    print("\n--- Summary estimators ---")
+    fmt_dict = {"τ̂": "{:.6f}", "SE": "{:.6f}",
+                "95% CI lower": "{:.6f}", "95% CI upper": "{:.6f}",
+                "t-stat": "{:.3f}", "p-value": "{:.4f}", "n": "{:.0f}"}
+    print(summary_df.to_string(float_format="{:.4f}".format))
 
-    if n_new > 0:
-        strat = cuped_stratified(data)
-        print(f"\n  μ̂ (coefficient on Y_pre among returning users) = {strat.mu_hat:.4f}")
-        print(f"  Population weights: w_ret = {n_ret/n:.3f},  w_new = {n_new/n:.3f}")
+    if cfg is not None:
+        print(f"\n  True PATE = {cfg.true_pate():.4f}")
+        print(f"  ρ(X, Y) ≈ {cfg.effective_autocorrelation():.3f}")
 
-    print()
-    return report
+    print("\n  Significance codes: *** p<0.001, ** p<0.01, * p<0.05, . p<0.1")
+    print("=" * 80)
+
+    return stratum_df, summary_df
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# CLI
-# ═══════════════════════════════════════════════════════════════════════════
-
-def _cli():
+# ===================================================================
+# CLI entry
+# ===================================================================
+if __name__ == "__main__":
     import argparse
-    p = argparse.ArgumentParser(
-        description="Single-experiment treatment-effect analysis.")
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--n_users", type=int, default=10_000)
-    p.add_argument("--tau_true", type=float, default=0.05)
-    p.add_argument("--beta_pre", type=float, default=0.8)
-    p.add_argument("--sigma_post", type=float, default=1.0)
-    p.add_argument("--p_new_users", type=float, default=0.20)
-    p.add_argument("--sigma_heterogeneity", type=float, default=0.0)
-    p.add_argument("--prior_sd_tau", type=float, default=0.10)
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(description="Single-experiment analysis")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--n", type=int, default=2000)
+    parser.add_argument("--rho", type=float, default=0.5)
+    parser.add_argument("--K", type=int, default=5)
+    parser.add_argument("--sigma", type=float, default=1.0)
+    parser.add_argument("--mcmc", action="store_true")
+    args = parser.parse_args()
 
     cfg = SimulationConfig(
-        n_users=args.n_users,
-        tau_true=args.tau_true,
-        beta_pre=args.beta_pre,
-        sigma_post=args.sigma_post,
-        p_new_users=args.p_new_users,
-        sigma_heterogeneity=args.sigma_heterogeneity,
-        prior_sd_tau=args.prior_sd_tau,
+        n_users=args.n, rho=args.rho, n_strata=args.K, sigma=args.sigma,
+        stratum_effects=[0.05, 0.10, 0.20, 0.30, 0.45][:args.K],
     )
-    analyze(cfg, seed=args.seed)
-
-
-if __name__ == "__main__":
-    _cli()
+    analyze(cfg, seed=args.seed, run_mcmc=args.mcmc)

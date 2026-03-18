@@ -1,482 +1,766 @@
-\documentclass[11pt,a4paper]{article}
+% =============================================================================
+%  Bayesian CUPED: Simulation Study Companion
+%  Ayman Farahat, March 2026
+% =============================================================================
+\documentclass[11pt,letterpaper]{article}
 
-% ── Packages ──────────────────────────────────────────────────────────────
-\usepackage[utf8]{inputenc}
-\usepackage[T1]{fontenc}
+% --- packages ----------------------------------------------------------------
+\usepackage[margin=1in]{geometry}
 \usepackage{amsmath,amssymb,amsthm}
 \usepackage{booktabs}
-\usepackage{geometry}
-\usepackage{natbib}
 \usepackage{hyperref}
-\usepackage{cleveref}
-\usepackage{algorithm}
-\usepackage{algpseudocode}
+\usepackage[ruled,vlined,linesnumbered]{algorithm2e}
 \usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{natbib}
 \usepackage{caption}
-\usepackage{subcaption}
-\geometry{margin=1in}
+\usepackage{tabularx}
 
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!70!black,
+  citecolor=blue!70!black,
+  urlcolor=blue!70!black,
+}
+
+% --- theorem environments ----------------------------------------------------
+\newtheorem{theorem}{Theorem}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}{Remark}
+
+% --- notation shortcuts ------------------------------------------------------
 \newcommand{\E}{\mathbb{E}}
-\newcommand{\Var}{\mathrm{Var}}
-\newcommand{\Cov}{\mathrm{Cov}}
-\newcommand{\SE}{\mathrm{SE}}
-\newcommand{\RMSE}{\mathrm{RMSE}}
-\newcommand{\iid}{\stackrel{\text{iid}}{\sim}}
-\newcommand{\Ypre}{Y_{\mathrm{pre}}}
+\newcommand{\Var}{\operatorname{Var}}
+\newcommand{\Cov}{\operatorname{Cov}}
+\newcommand{\SE}{\operatorname{SE}}
+\newcommand{\RMSE}{\operatorname{RMSE}}
+\newcommand{\RE}{\operatorname{RE}}
 \newcommand{\tauhat}{\hat{\tau}}
-\newcommand{\betahat}{\hat{\beta}}
+\newcommand{\taustar}{\tau^{*}}
 \newcommand{\muhat}{\hat{\mu}}
-\newcommand{\bR}{\mathrm{R}}  % returning
-\newcommand{\bN}{\mathrm{N}}  % new
+\newcommand{\sigmahat}{\hat{\sigma}}
+\newcommand{\betahat}{\hat{\beta}}
+\newcommand{\PATE}{\text{PATE}}
+\newcommand{\VWATT}{\text{VWATT}}
+\newcommand{\EB}{\text{EB}}
+\newcommand{\DIM}{\text{DIM}}
+\newcommand{\CUPED}{\text{CUPED}}
+\newcommand{\OLS}{\text{OLS}}
+\newcommand{\iid}{\overset{\text{iid}}{\sim}}
 
-\title{Stratified CUPED for Treatment-Effect Estimation\\
-       with New Users: A Monte Carlo Study}
-\author{}
-\date{\today}
+% --- title -------------------------------------------------------------------
+\title{\textbf{Bayesian CUPED: Simulation Study Companion}}
+\author{Ayman Farahat}
+\date{March 2026}
 
 \begin{document}
 \maketitle
 
-% ══════════════════════════════════════════════════════════════════════════
-\section{Introduction}
-% ══════════════════════════════════════════════════════════════════════════
+% =============================================================================
+% ABSTRACT
+% =============================================================================
+\begin{abstract}
+This document is the simulation study companion for the paper
+``Bayesian CUPED: Hierarchical Shrinkage for Variance Reduction in Online
+Experiments'' \citep{farahat2026}.
+Five estimators---Naive Difference-in-Means (E1), CUPED OLS (E2),
+Stratified OLS (E3), Empirical Bayes CUPED (E4), and Bayesian MCMC
+(E5)---are evaluated across 21~simulation regimes spanning variation in
+autocorrelation, error distribution, treatment heterogeneity, sample
+size, stratification granularity, treatment balance, and noise scale
+using $B = 300$ Monte Carlo replications.
+EB~CUPED (E4) achieves competitive mean RMSE (0.0777) with CUPED~OLS
+(0.0781) across all 21~regimes, while uniquely providing RMSE gains
+under adversarial conditions where CUPED~OLS fails.
+\end{abstract}
 
-We study the estimation of the Population Average Treatment Effect
-(PATE) in A/B tests where some users are ``new'' and lack a
-pre-experiment outcome~$\Ypre$.  The CUPED estimator
-\citep{deng2013improving} uses $\Ypre$ to reduce variance, but is
-undefined for new users.  We propose a \emph{stratified} approach:
-estimate the treatment effect separately on returning and new users,
-then combine the stratum-level estimates with proper weighting and
-standard errors.
+\tableofcontents
+\newpage
 
-% ══════════════════════════════════════════════════════════════════════════
-\section{Data Generating Process}
-\label{sec:dgp}
-% ══════════════════════════════════════════════════════════════════════════
+% =============================================================================
+% 1  INTRODUCTION
+% =============================================================================
+\section{Introduction}\label{sec:intro}
 
-For user $i \in \{1,\dots,n\}$:
+CUPED \citep{deng2013improving} reduces variance in A/B tests by
+adjusting for a pre-experiment covariate.  When the covariate is
+discretized into strata, the OLS coefficient targets a
+variance-weighted average treatment effect ($\VWATT$) rather than
+the population average treatment effect ($\PATE$)---a distinction
+that matters under heterogeneous treatment effects (Theorem~1 of
+\citet{farahat2026}).
 
-\begin{enumerate}
-\item Treatment assignment: $D_i \iid \mathrm{Bernoulli}(p)$.
-\item New-user indicator: $N_i \iid \mathrm{Bernoulli}(\pi)$, independent of $D_i$.
-\item Pre-period outcome (latent for all users):
-      $\Ypre^{*}_i \iid \mathcal{N}(\mu_0, \sigma_0^2)$.
-\item Observed pre-period outcome:
-      $\Ypre_i = \begin{cases} \Ypre^{*}_i & \text{if } N_i = 0 \text{ (returning)}, \\
-                                \text{missing} & \text{if } N_i = 1 \text{ (new)}.\end{cases}$
-\item Individual treatment effect:
-      $\tau_i = \tau + \sigma_h z_i, \quad z_i \iid \mathcal{N}(0,1)$.
-      When $\sigma_h = 0$ the effect is homogeneous.
-\item Post-period outcome:
-      $Y_i = \beta_0 \Ypre^{*}_i + \tau_i D_i + \varepsilon_i, \quad
-       \varepsilon_i \iid \mathcal{N}(0, \sigma_\varepsilon^2)$.
+The companion paper proposes two remedies: (i)~a closed-form
+\emph{Empirical Bayes CUPED} estimator that applies James--Stein
+shrinkage across strata and targets the $\PATE$; and (ii)~a full
+Bayesian hierarchical model with MCMC posterior inference.  This
+document describes the simulation code that evaluates all five
+estimators:
+\begin{enumerate}[label=E\arabic*.,leftmargin=2em]
+  \item \textbf{Naive DIM} --- difference in means.
+  \item \textbf{CUPED OLS} --- OLS with covariate adjustment; targets $\VWATT$.
+  \item \textbf{Stratified OLS} --- OLS with stratum fixed effects; targets $\VWATT$.
+  \item \textbf{EB CUPED} --- James--Stein shrinkage; targets $\PATE$.
+  \item \textbf{Bayesian MCMC} --- hierarchical model; targets $\PATE$.
 \end{enumerate}
 
-The PATE is $\tau = \E[\tau_i]$.
-The approximate correlation between $\Ypre^{*}$ and $Y$ (under $D=0$) is
+
+% =============================================================================
+% 2  DATA-GENERATING PROCESS
+% =============================================================================
+\section{Data-Generating Process}\label{sec:dgp}
+
+\subsection{Variables}
+
+\paragraph{Pre-period covariate.}
+$X_i \sim \text{Gamma}(2, 1)$, discretized into $K$ quantile-based
+strata via \texttt{pandas.qcut}.
+
+\paragraph{Treatment assignment.}
+$D_i \sim \text{Bernoulli}(p_{\text{treat}})$, independent of $X_i$.
+
+\paragraph{Stratum-level effects.}
+Under heterogeneity: $\tau_k \in \{0.05,\; 0.10,\; 0.20,\; 0.30,\; 0.45\}$
+for $K=5$; under homogeneity: $\tau_k = 0.20$ for all $k$.
+
+\paragraph{Outcome.}
 \[
-  \rho = \frac{\beta_0 \sigma_0^2}
-              {\sqrt{\sigma_0^2\bigl(\beta_0^2 \sigma_0^2 + \sigma_\varepsilon^2\bigr)}}\,.
+  Y_i = \rho\, X_i + \tau_{s(i)}\, D_i + \varepsilon_i,
 \]
+where $\varepsilon_i$ is drawn from one of three distributions:
+\begin{enumerate}
+  \item $\varepsilon_i \sim \mathcal{N}(0, \sigma^2)$ \quad (Gaussian),
+  \item $\varepsilon_i \sim \sigma \cdot t_3$ \quad (heavy-tailed),
+  \item $\varepsilon_i \sim \sigma \cdot \bigl(\text{LogNormal}(0, 0.5)
+        - e^{0.125}\bigr)$ \quad (skewed, mean-centered).
+\end{enumerate}
 
-% ══════════════════════════════════════════════════════════════════════════
-\section{Estimators}
-\label{sec:estimators}
-% ══════════════════════════════════════════════════════════════════════════
+\paragraph{True PATE.}
+$\taustar = \sum_{k=1}^{K} (n_k/n)\, \tau_k$.
 
-For every estimator~$k$ we report five quantities:
-\[
-  \tauhat_k, \qquad
-  \SE_k, \qquad
-  \bigl[\tauhat_k \pm 1.96\,\SE_k\bigr], \qquad
-  t_k = \frac{\tauhat_k}{\SE_k}, \qquad
-  p_k = 2\,\Phi\!\bigl(-|t_k|\bigr),
-\]
-where $\Phi$ is the standard normal CDF.
-We reject $H_0\!: \tau = 0$ at level $\alpha=0.05$ when $p_k < 0.05$.
+\paragraph{Defaults.}
+$n = 2000$, $\rho = 0.5$, $K = 5$, $p = 0.5$, $\sigma = 1$,
+$\delta_\tau = 1$, Gaussian noise, heterogeneous effects.
 
-% ── 3.1 Naive ─────────────────────────────────────────────────────────────
-\subsection{Naive difference-in-means}
 
-\[
-  \tauhat_{\mathrm{naive}}
-  = \bar{Y}_T - \bar{Y}_C,
-  \qquad
-  \SE(\tauhat_{\mathrm{naive}})
-  = \sqrt{\frac{s_T^2}{n_T} + \frac{s_C^2}{n_C}}\,,
-\]
-where $s_T^2, s_C^2$ are sample variances within treatment and control.
+% ---------------------------------------------------------------------------
+\subsection{Simulation Regimes}
 
-% ── 3.2 CUPED ─────────────────────────────────────────────────────────────
-\subsection{CUPED (returning users)}
-\label{sec:cuped}
+Table~\ref{tab:regimes} lists all 21 simulation regimes.  Each varies
+one or two parameters from the baseline.
 
-On users with observed $\Ypre$, we fit by OLS:
-\begin{equation}\label{eq:cuped}
-  Y_i = \alpha + \beta D_i + \mu \Ypre_i + e_i\,.
-\end{equation}
-The treatment-effect estimate is $\betahat$, the OLS coefficient on $D_i$.
-Its standard error is the usual homoskedastic OLS SE:
-\[
-  \SE(\betahat) = \sqrt{\hat\sigma_e^2 \, [(X'X)^{-1}]_{22}},
-  \qquad
-  \hat\sigma_e^2 = \frac{\sum_i \hat{e}_i^2}{n_\bR - 3}\,.
-\]
-
-% ── 3.3 Stratified estimation ─────────────────────────────────────────────
-\subsection{Stratified estimation with new users}
-\label{sec:stratified}
-
-When a fraction $\pi > 0$ of users are new, we estimate the treatment
-effect separately in each stratum:
-
-\begin{align*}
-  \text{Returning} \; (\bR): & \quad
-    \betahat_\bR,\; \SE_\bR
-    \quad\text{from OLS CUPED \eqref{eq:cuped} on } n_\bR \text{ users}, \\
-  \text{New} \; (\bN): & \quad
-    \tauhat_\bN = \bar Y_{T,\bN} - \bar Y_{C,\bN},\;
-    \SE_\bN
-    \quad\text{from Welch diff-in-means on } n_\bN \text{ users}.
-\end{align*}
-
-\paragraph{Population-weighted PATE.}
-With weights $w_\bR = n_\bR/n$, $w_\bN = n_\bN/n$:
-\begin{align}
-  \tauhat_{\mathrm{pop}}
-  &= w_\bR\,\betahat_\bR + w_\bN\,\tauhat_\bN\,,
-  \label{eq:tau_pop} \\
-  \Var(\tauhat_{\mathrm{pop}})
-  &= w_\bR^2\,\SE_\bR^2 + w_\bN^2\,\SE_\bN^2\,,
-  \label{eq:var_pop}
-\end{align}
-where independence of the two strata (disjoint users) justifies the
-variance decomposition.  This estimator targets the overall PATE and
-weights each stratum by its population share.
-
-\paragraph{Precision-weighted (minimum-variance).}
-The inverse-variance-weighted combination:
-\begin{align}
-  \tauhat_{\mathrm{prec}}
-  &= \frac{
-      \betahat_\bR / V_\bR + \tauhat_\bN / V_\bN
-    }{
-      1/V_\bR + 1/V_\bN
-    }\,,
-  \qquad V_k = \SE_k^2\,,
-  \label{eq:tau_prec} \\
-  \Var(\tauhat_{\mathrm{prec}})
-  &= \frac{1}{1/V_\bR + 1/V_\bN}\,.
-  \label{eq:var_prec}
-\end{align}
-Under homogeneous treatment effects ($\sigma_h = 0$), both strata
-target the same~$\tau$ and precision-weighting is efficient.  Under
-heterogeneity, precision-weighting may deviate from PATE because it
-up-weights the lower-variance stratum (returning users with CUPED).
-
-% ── 3.4 Bayesian ──────────────────────────────────────────────────────────
-\subsection{Bayesian normal-normal estimator}
-
-Prior: $\tau \sim \mathcal{N}(m_0, v_0)$.
-Likelihood approximation: $\tauhat_{\mathrm{naive}} \mid \tau \sim \mathcal{N}(\tau, \hat V)$
-where $\hat V = s_T^2/n_T + s_C^2/n_C$.
-Posterior:
-\begin{align}
-  \tau \mid \text{data}
-  &\sim \mathcal{N}(\mu_{\mathrm{post}}, \sigma_{\mathrm{post}}^2)\,,
-  \label{eq:bayes} \\
-  \sigma_{\mathrm{post}}^2
-  &= \Bigl(\frac{1}{v_0} + \frac{1}{\hat V}\Bigr)^{-1},
-  \qquad
-  \mu_{\mathrm{post}}
-  = \sigma_{\mathrm{post}}^2
-    \Bigl(\frac{m_0}{v_0} + \frac{\tauhat_{\mathrm{naive}}}{\hat V}\Bigr).
-  \nonumber
-\end{align}
-We report $\mu_{\mathrm{post}}$ as the point estimate and
-$\sigma_{\mathrm{post}}$ as the SE (posterior SD).
-
-% ══════════════════════════════════════════════════════════════════════════
-\section{Single-Experiment Analysis (Primary Use Case)}
-\label{sec:single}
-% ══════════════════════════════════════════════════════════════════════════
-
-The primary use case is analyzing a \emph{single} completed experiment.
-Given data $\{(D_i,\, \Ypre_i,\, Y_i)\}_{i=1}^n$, the analyst asks
-three questions, each requiring a point estimate, standard error,
-confidence interval, and $p$-value.
-
-% ── 4.1 Existing users ───────────────────────────────────────────────────
-\subsection{ATE on existing (returning) users}
-
-Restrict to the $n_\bR$ users with observed~$\Ypre$.
-Fit the CUPED model by OLS:
-\[
-  Y_i = \alpha + \beta D_i + \mu \Ypre_i + e_i,
-  \qquad i \in \bR.
-\]
-The estimator $\betahat_\bR$ and its standard error
-$\SE_\bR = \sqrt{\hat\sigma_e^2 [(X'X)^{-1}]_{22}}$ yield:
-\begin{align*}
-  \text{95\% CI}_\bR &= \bigl[\betahat_\bR - 1.96\,\SE_\bR,\;\;
-                               \betahat_\bR + 1.96\,\SE_\bR\bigr], \\
-  t_\bR &= \betahat_\bR / \SE_\bR, \\
-  p_\bR &= 2\,\Phi(-|t_\bR|).
-\end{align*}
-The null hypothesis is $H_0\!: \beta = 0$ (no treatment effect among
-returning users).
-
-% ── 4.2 New users ────────────────────────────────────────────────────────
-\subsection{ATE on new users}
-
-Restrict to the $n_\bN$ users with missing~$\Ypre$.
-No covariate adjustment is possible, so we use the difference-in-means:
-\[
-  \tauhat_\bN = \bar Y_{T,\bN} - \bar Y_{C,\bN},
-  \qquad
-  \SE_\bN = \sqrt{\frac{s_{T,\bN}^2}{n_{T,\bN}} +
-                  \frac{s_{C,\bN}^2}{n_{C,\bN}}}\,.
-\]
-\begin{align*}
-  \text{95\% CI}_\bN &= \bigl[\tauhat_\bN \pm 1.96\,\SE_\bN\bigr], \\
-  t_\bN &= \tauhat_\bN / \SE_\bN, \\
-  p_\bN &= 2\,\Phi(-|t_\bN|).
-\end{align*}
-The null hypothesis is $H_0\!: \tau_\bN = 0$.
-
-% ── 4.3 Overall ATE ─────────────────────────────────────────────────────
-\subsection{Overall ATE}
-
-The population-weighted estimator \eqref{eq:tau_pop} combines the two
-strata:
-\[
-  \tauhat_{\mathrm{pop}} = w_\bR\,\betahat_\bR + w_\bN\,\tauhat_\bN,
-  \qquad w_\bR = n_\bR/n,\; w_\bN = n_\bN/n.
-\]
-Because the strata are disjoint (independent), the standard error is
-\[
-  \SE_{\mathrm{pop}} = \sqrt{w_\bR^2\,\SE_\bR^2 + w_\bN^2\,\SE_\bN^2}\,.
-\]
-\begin{align*}
-  \text{95\% CI}_{\mathrm{pop}} &= \bigl[\tauhat_{\mathrm{pop}}
-    \pm 1.96\,\SE_{\mathrm{pop}}\bigr], \\
-  t_{\mathrm{pop}} &= \tauhat_{\mathrm{pop}} / \SE_{\mathrm{pop}}, \\
-  p_{\mathrm{pop}} &= 2\,\Phi(-|t_{\mathrm{pop}}|).
-\end{align*}
-
-% ── 4.4 Sample report ───────────────────────────────────────────────────
-\subsection{Experiment report table}
-
-The code produces a table of the following form:
-
-\begin{center}
+\begin{table}[htbp]
+\centering
+\caption{Twenty-one simulation regimes (Table~2 of \citet{farahat2026}).
+Defaults: $n=2000$, $\rho=0.5$, $K=5$, $p=0.5$, $\sigma=1$,
+$\delta_\tau=1$, Gaussian noise, heterogeneous effects.}
+\label{tab:regimes}
 \small
-\renewcommand{\arraystretch}{1.3}
-\begin{tabular}{l l r r r r r r l}
+\begin{tabular}{@{}rl l@{}}
 \toprule
-Group & Method & $\tauhat$ & SE & CI lower & CI upper & $t$ & $p$ & \\
+\# & Regime label & Parameter change from defaults \\
 \midrule
-Existing users  & CUPED OLS     & 0.0532 & 0.0198 & 0.0143 & 0.0921 & 2.68 & 0.0073 & ** \\
-New users       & Diff-in-means & 0.1242 & 0.0584 & 0.0097 & 0.2387 & 2.13 & 0.0335 & *  \\
-Overall (pop.)  & Stratified    & 0.0674 & 0.0192 & 0.0297 & 0.1051 & 3.51 & 0.0005 & *** \\
-Overall (prec.) & Stratified    & 0.0570 & 0.0188 & 0.0201 & 0.0939 & 3.03 & 0.0025 & ** \\
-Naive (all)     & Diff-in-means & 0.0645 & 0.0230 & 0.0194 & 0.1096 & 2.80 & 0.0051 & ** \\
-Bayesian        & Normal-normal & 0.0498 & 0.0187 & 0.0131 & 0.0865 & 2.66 & 0.0078 & ** \\
+\multicolumn{3}{@{}l}{\emph{Autocorrelation}} \\
+ 1 & baseline               & (all defaults) \\
+ 2 & high autocorr          & $\rho = 0.9$ \\
+ 3 & low autocorr           & $\rho = 0.1$ \\
+\midrule
+\multicolumn{3}{@{}l}{\emph{Distribution}} \\
+ 4 & heavy tail             & $\varepsilon_i \sim t_3$ \\
+ 5 & skewed                 & $\varepsilon_i \sim \text{LogNormal}(0,0.5) - e^{0.125}$ \\
+\midrule
+\multicolumn{3}{@{}l}{\emph{Heterogeneity}} \\
+ 6 & homogeneous            & $\tau_k = 0.20\ \forall k$ \\
+ 7 & heterogeneous          & $\rho = 0.7$; $\tau_k \in [0.05, 0.45]$ \\
+ 8 & large effects          & $\delta_\tau = 3.0$ \\
+ 9 & small effects          & $\delta_\tau = 0.2$ \\
+\midrule
+\multicolumn{3}{@{}l}{\emph{Sample size}} \\
+10 & small sample           & $n = 300$ \\
+11 & medium sample          & $n = 1{,}000$ \\
+12 & large sample           & $n = 10{,}000$ \\
+\midrule
+\multicolumn{3}{@{}l}{\emph{Stratification}} \\
+13 & few strata             & $K = 3$ \\
+14 & many strata            & $K = 10$ \\
+\midrule
+\multicolumn{3}{@{}l}{\emph{Treatment balance}} \\
+15 & balanced               & $p = 0.50$ (same as baseline) \\
+16 & imbalanced             & $p = 0.20$ \\
+17 & sparse treatment       & $p = 0.05$ \\
+\midrule
+\multicolumn{3}{@{}l}{\emph{Noise scale}} \\
+18 & low noise              & $\sigma = 0.3$ \\
+19 & high noise             & $\sigma = 3.0$ \\
+\midrule
+\multicolumn{3}{@{}l}{\emph{Compound}} \\
+20 & worst case             & $t_3$, $\rho=0.1$, $n=300$, $p=0.20$, $\sigma=2$ \\
+21 & best case              & $\rho=0.95$, $n=5{,}000$, $\sigma=0.3$ \\
 \bottomrule
 \end{tabular}
-\end{center}
+\end{table}
 
-\noindent
-Significance codes: *** $p<0.001$, ** $p<0.01$, * $p<0.05$, $.$ $p<0.10$.
 
-\medskip
-\noindent
-\textbf{Key observations:}
-\begin{itemize}
-  \item The SE for existing users is smaller than the naive SE because
-        CUPED uses $\Ypre$ to absorb variation.
-  \item The SE for new users is larger (fewer users, no covariate
-        adjustment).
-  \item The population-weighted overall SE is between the two, reflecting
-        the variance from both strata.
-  \item The precision-weighted SE is the smallest achievable combined SE,
-        but the estimand may differ from PATE under heterogeneity.
-\end{itemize}
+% =============================================================================
+% 3  ESTIMATORS
+% =============================================================================
+\section{Estimators}\label{sec:estimators}
 
-% ── 4.5 Testing equality ────────────────────────────────────────────────
-\subsection{Testing equality of effects across strata}
+All five estimators produce
+$(\tauhat,\; \SE,\; \text{CI}_{95\%},\; t,\; p)$ where
+$t = \tauhat / \SE$ and $p = 2\,\Phi(-|t|)$.
 
-To test whether returning and new users respond differently to
-treatment ($H_0\!: \beta_\bR = \tau_\bN$), compute
+% ---------------------------------------------------------------------------
+\subsection{E1: Naive Difference-in-Means}
+
 \[
-  t_{\mathrm{diff}} = \frac{\betahat_\bR - \tauhat_\bN}
-                           {\sqrt{\SE_\bR^2 + \SE_\bN^2}}\,,
-  \qquad
-  p_{\mathrm{diff}} = 2\,\Phi\!\bigl(-|t_{\mathrm{diff}}|\bigr).
+  \tauhat_{\DIM} = \bar{Y}_T - \bar{Y}_C, \qquad
+  \SE_{\DIM} = \sqrt{\frac{s_T^2}{n_T} + \frac{s_C^2}{n_C}}.
 \]
-Independence of the two strata justifies adding the variances.
-Rejecting this null at $\alpha=0.05$ would indicate heterogeneity
-between new and returning users.
 
-% ── 4.6 Running ─────────────────────────────────────────────────────────
-\subsection{Running the single-experiment analysis}
+% ---------------------------------------------------------------------------
+\subsection{E2: CUPED OLS (targets VWATT)}
 
-\begin{verbatim}
-# Command line
-python inference.py
-python inference.py --p_new_users 0.3
-python main.py --single
+OLS regression $Y_i = \alpha + \beta\, D_i + \gamma\, X_i + \varepsilon_i$.
+Reports $\tauhat = \betahat$ with standard OLS SE.
 
-# Python
-from inference import experiment_report
-report = experiment_report(data, cfg)
-\end{verbatim}
+\begin{theorem}[CUPED as Matching, Theorem~1 of \citet{farahat2026}]\label{thm:cuped}
+$\betahat_{\CUPED} = \sum_{k=1}^{K} \lambda_k\, \tauhat_k$ where
+$\lambda_k = n_k p_k(1-p_k) / \sum_j n_j p_j(1-p_j)$.
+\end{theorem}
 
-% ══════════════════════════════════════════════════════════════════════════
-\section{Monte Carlo Design}
-\label{sec:mc}
-% ══════════════════════════════════════════════════════════════════════════
+\begin{corollary}
+When $p_k = p$ for all $k$, $\lambda_k = n_k/n$ and the $\CUPED$
+estimand equals the $\PATE$.
+\end{corollary}
 
-We run $S = 1{,}000$ independent replications.  In each replication~$s$:
-\begin{enumerate}
-  \item Draw data $\{(D_i, \Ypre_i, Y_i, N_i)\}_{i=1}^n$ from the DGP
-        in \Cref{sec:dgp}.
-  \item Compute each estimator $k$: $(\tauhat_k^{(s)},\;\SE_k^{(s)})$.
-  \item Record whether the 95\% CI
-        $[\tauhat_k^{(s)} \pm 1.96\,\SE_k^{(s)}]$ covers $\tau$.
-\end{enumerate}
+% ---------------------------------------------------------------------------
+\subsection{E3: Stratified OLS}
 
-\paragraph{Performance metrics} (across $S$ simulations for estimator $k$):
+$Y_i = \sum_{k=1}^{K} \alpha_k\, \mathbf{1}\{s(i)=k\} + \beta\, D_i + \varepsilon_i$.
 
-\begin{center}
-\renewcommand{\arraystretch}{1.4}
-\begin{tabular}{ll}
-\toprule
-Metric & Definition \\
-\midrule
-Bias
-  & $\displaystyle\frac{1}{S}\sum_{s=1}^S \tauhat_k^{(s)} - \tau$ \\[4pt]
-Empirical SD
-  & $\displaystyle\mathrm{sd}\bigl(\{\tauhat_k^{(s)}\}_{s=1}^S\bigr)$ \\[4pt]
-Mean SE
-  & $\displaystyle\frac{1}{S}\sum_{s=1}^S \SE_k^{(s)}$ \\[4pt]
-SE/SD Ratio
-  & $\displaystyle\text{Mean SE} \;/\; \text{Empirical SD}$
-    \quad(should $\approx 1$ if SE is calibrated) \\[4pt]
-RMSE
-  & $\displaystyle\sqrt{\frac{1}{S}\sum_{s=1}^S (\tauhat_k^{(s)} - \tau)^2}$ \\[4pt]
-Coverage
-  & Fraction of replications where $\tau \in [\tauhat_k^{(s)} \pm 1.96\,\SE_k^{(s)}]$
-    \quad(should $\approx 0.95$) \\[4pt]
-Power
-  & Fraction of replications where $0 \notin [\tauhat_k^{(s)} \pm 1.96\,\SE_k^{(s)}]$ \\
-\bottomrule
-\end{tabular}
-\end{center}
+% ---------------------------------------------------------------------------
+\subsection{E4: Empirical Bayes CUPED (Algorithm~1)}
 
-% ══════════════════════════════════════════════════════════════════════════
-\section{Baseline Configuration}
-\label{sec:baseline}
-% ══════════════════════════════════════════════════════════════════════════
+James--Stein shrinkage with population-weighted PATE.
 
-\begin{center}
-\renewcommand{\arraystretch}{1.3}
-\begin{tabular}{lll}
-\toprule
-Parameter & Symbol & Default \\
-\midrule
-Users per experiment  & $n$             & 10{,}000 \\
-Treatment probability & $p$             & 0.5 \\
-True PATE             & $\tau$          & 0.05 \\
-Pre-period mean       & $\mu_0$         & 1.0 \\
-Pre-period SD         & $\sigma_0$      & 0.5 \\
-Autoregressive slope  & $\beta_0$       & 0.8 \\
-Post-period noise SD  & $\sigma_\varepsilon$ & 1.0 \\
-Effect heterogeneity  & $\sigma_h$      & 0.0 \\
-New-user fraction     & $\pi$           & 0.2 \\
-Prior mean            & $m_0$           & 0.0 \\
-Prior SD              & $\sqrt{v_0}$    & 0.1 \\
-Simulations           & $S$             & 1{,}000 \\
-\bottomrule
-\end{tabular}
-\end{center}
+\begin{algorithm}[htbp]
+\DontPrintSemicolon
+\caption{Empirical Bayes CUPED}\label{alg:eb}
+\KwIn{$(Y_i, D_i, s_i)_{i=1}^{n}$, $K$ strata}
+\KwOut{$\tauhat_{\EB}$, $\SE_{\EB}$, stratum-level estimates}
+\BlankLine
+\tcp{Step 1: Within-stratum DIM}
+\For{$k = 1, \ldots, K$}{
+  $\tauhat_k \gets \bar{Y}_{T,k} - \bar{Y}_{C,k}$\;
+  $s_k^2 \gets \sigma_{k,T}^2/n_k^T + \sigma_{k,C}^2/n_k^C$\;
+}
+\tcp{Step 2: Precision-weighted global mean}
+$\muhat_\tau \gets \sum_k (\tauhat_k / s_k^2)\, \big/\, \sum_k (1/s_k^2)$\;
+\tcp{Step 3: MoM heterogeneity}
+$\sigmahat_\tau^2 \gets \max\!\bigl(0,\, \frac{1}{K-1}\sum_k(\tauhat_k - \muhat_\tau)^2 - \frac{1}{K}\sum_k s_k^2\bigr)$\;
+\tcp{Step 4: Shrinkage}
+$B_k \gets s_k^2 / (s_k^2 + \sigmahat_\tau^2)$\;
+\tcp{Step 5: Shrunk estimates}
+$\tauhat_k^{\EB} \gets (1 - B_k)\tauhat_k + B_k \muhat_\tau$\;
+\tcp{Step 6: Population-weighted PATE}
+$\tauhat_{\EB} \gets \sum_k (n_k/n)\, \tauhat_k^{\EB}$\;
+\tcp{Step 7: Delta-method SE}
+$\SE_{\EB} \gets \sqrt{\sum_k (n_k/n)^2 (1-B_k)^2 s_k^2}$\;
+\end{algorithm}
 
-At baseline, $\rho \approx 0.37$.  Increasing $\beta_0$ or decreasing
-$\sigma_\varepsilon$ raises $\rho$ and amplifies CUPED's variance
-reduction.  Increasing $\pi$ shifts more weight to the new-user
-stratum, where no variance reduction is available.
+% ---------------------------------------------------------------------------
+\subsection{E5: Bayesian MCMC}
 
-% ══════════════════════════════════════════════════════════════════════════
-\section{Scenarios}
-\label{sec:scenarios}
-% ══════════════════════════════════════════════════════════════════════════
+\begin{align}
+  \tau_k &\sim \mathcal{N}(\mu_\tau, \sigma_\tau^2), \quad k=1,\ldots,K \\
+  Y_{ik} &\sim \mathcal{N}(\alpha_k + \tau_k D_{ik}, \sigma_y^2)
+\end{align}
+Priors: $\mu_\tau \sim \mathcal{N}(0,1)$, $\sigma_\tau \sim \text{Exp}(1)$,
+$\alpha_k \sim \mathcal{N}(0,2)$, $\sigma_y \sim \text{Exp}(1)$.
+The $\PATE$ is $\sum_k (n_k/n) \tau_k$; SE is the posterior~SD.
 
-We vary one parameter at a time from the baseline:
 
-\begin{enumerate}
-  \item \textbf{No new users} ($\pi=0$): CUPED operates on the full
-        sample. Stratified and plain CUPED coincide.
-  \item \textbf{Low new-user fraction} ($\pi=0.1$): Returning stratum
-        dominates; precision-weighting close to population-weighting.
-  \item \textbf{High new-user fraction} ($\pi=0.5$): Large new-user
-        stratum; population-weighted estimate substantially different
-        from returning-only CUPED.
-  \item \textbf{Strong autocorrelation} ($\beta_0=1.5$): CUPED's
-        variance reduction is large; precision-weighting leans heavily
-        on returning users.
-  \item \textbf{Weak autocorrelation} ($\beta_0=0.1$): CUPED barely
-        helps; all estimators behave similarly.
-  \item \textbf{Heterogeneous effects} ($\sigma_h=0.1$): Precision-weighting
-        may deviate from PATE because it over-weights the lower-variance
-        stratum.
-\end{enumerate}
+% =============================================================================
+% 4  SINGLE-EXPERIMENT ANALYSIS
+% =============================================================================
+\section{Single-Experiment Analysis}\label{sec:single}
 
-% ══════════════════════════════════════════════════════════════════════════
-\section{Expected Results}
-% ══════════════════════════════════════════════════════════════════════════
-
+The primary use case is a single-experiment report.  The function
+\texttt{experiment\_report()} produces:
 \begin{itemize}
-  \item All estimators should be approximately unbiased for PATE when
-        $\sigma_h = 0$.
-  \item CUPED (returning) should have lower RMSE than naive when
-        $\rho > 0$.
-  \item Population-weighted PATE should have correct coverage ($\approx 0.95$)
-        and SE/SD ratio $\approx 1$.
-  \item Precision-weighted should have lower RMSE than population-weighted
-        (by construction), but may exhibit slight bias for PATE under
-        heterogeneity if the strata have different conditional ATEs.
-  \item The Bayesian estimator with an informative prior ($\sqrt{v_0}=0.1$)
-        will exhibit shrinkage toward $m_0$; coverage may drop below 0.95
-        if the prior is misspecified.
+  \item Stratum-level: raw $\tauhat_k$, EB-shrunk $\tauhat_k^{\EB}$,
+    shrinkage factor $B_k$, VWATT weights $\lambda_k$, population
+    weights $w_k = n_k/n$.
+  \item Summary: $\VWATT$ (Theorem~\ref{thm:cuped}), $\PATE$ (EB~CUPED),
+    OLS variants, Naive DIM, each with $\tauhat$, SE, CI, $t$, $p$.
 \end{itemize}
 
-% ══════════════════════════════════════════════════════════════════════════
-\section{Running the Code}
-% ══════════════════════════════════════════════════════════════════════════
+\subsection{Testing Equality of Stratum Effects}
 
+$H_0: \tau_1 = \cdots = \tau_K$.
+\[
+  Q = \sum_{k=1}^{K} \frac{(\tauhat_k - \muhat_\tau)^2}{s_k^2}
+  \;\sim\; \chi^2(K-1) \quad \text{under } H_0.
+\]
+
+\subsection{Running}
 \begin{verbatim}
-cd AymanSimulation/
-python main.py                  # baseline scenario
-jupyter notebook experiment.ipynb  # interactive notebook
+python main.py --single --seed 42
+python inference.py --seed 42 --n 2000
 \end{verbatim}
 
-The notebook allows changing any parameter in a configuration cell and
-re-running to see updated tables and plots.
 
-% ══════════════════════════════════════════════════════════════════════════
-\section*{References}
-% ══════════════════════════════════════════════════════════════════════════
+% =============================================================================
+% 5  MONTE CARLO EVALUATION
+% =============================================================================
+\section{Monte Carlo Evaluation}\label{sec:mc}
 
-\begingroup
-\renewcommand{\section}[2]{}
-\begin{thebibliography}{9}
+\subsection{Design}
+
+$B = 300$ replications per regime, seed$_b = 42 + b$.
+Four fast estimators (E1--E4) on every replication; E5 via targeted
+comparison (Section~\ref{sec:mcmc-mc}).
+
+\subsection{Metrics}
+
+\begin{table}[htbp]
+\centering\small
+\caption{Monte Carlo metrics.}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Metric & Formula \\
+\midrule
+Bias        & $B^{-1}\sum_b (\tauhat^{(b)} - \taustar)$ \\[4pt]
+Variance    & $(B-1)^{-1}\sum_b (\tauhat^{(b)} - \bar{\tauhat})^2$ \\[4pt]
+RMSE        & $\sqrt{\text{Bias}^2 + \text{Variance}}$ \\[4pt]
+MAE         & $B^{-1}\sum_b |\tauhat^{(b)} - \taustar|$ \\[4pt]
+Mean SE     & $B^{-1}\sum_b \SE^{(b)}$ \\[4pt]
+SE/SD       & $\text{Mean SE} / \text{SD}(\tauhat^{(1:B)})$ \\[4pt]
+Coverage    & $B^{-1}\sum_b \mathbf{1}\{\taustar \in \text{CI}^{(b)}\}$ \\[4pt]
+RE vs.~Naive & $\Var(\tauhat_{\DIM}) / \Var(\tauhat)$ \\[4pt]
+CI Width    & $B^{-1}\sum_b (\text{CI}_u^{(b)} - \text{CI}_l^{(b)})$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ---------------------------------------------------------------------------
+\subsection{Table 3: RMSE Results (E1--E4)}
+
+\begin{table}[htbp]
+\centering
+\caption{Root mean squared error across 21 regimes, $B=300$.
+Bold = best in row.  Asterisk$^{*}$ = EB~CUPED improves over CUPED~OLS.}
+\label{tab:rmse}
+\small
+\begin{tabular}{@{}l rrrr@{}}
+\toprule
+Regime & E1 Naive & E2 CUPED OLS & E3 Strat.\ OLS & E4 EB CUPED \\
+\midrule
+baseline            & 0.0585 & \textbf{0.0478} & 0.0498 & 0.0501 \\
+high autocorr       & 0.0754 & \textbf{0.0478} & 0.0539 & 0.0549 \\
+low autocorr        & 0.0486 & \textbf{0.0478} & 0.0479 & 0.0479 \\
+\midrule
+heavy tail$^{*}$    & 0.0849 & 0.0784 & 0.0796 & \textbf{0.0779} \\
+skewed              & 0.0451 & \textbf{0.0288} & 0.0323 & 0.0333 \\
+\midrule
+homogeneous         & 0.0569 & \textbf{0.0478} & 0.0498 & 0.0493 \\
+heterogeneous       & 0.0663 & \textbf{0.0478} & 0.0516 & 0.0523 \\
+large effects       & 0.0620 & \textbf{0.0479} & 0.0499 & 0.0500 \\
+small effects       & 0.0572 & \textbf{0.0478} & 0.0498 & 0.0494 \\
+\midrule
+small sample        & 0.1468 & \textbf{0.1177} & 0.1231 & 0.1235 \\
+medium sample       & 0.0730 & \textbf{0.0582} & 0.0632 & 0.0630 \\
+large sample        & 0.0254 & \textbf{0.0201} & 0.0209 & 0.0210 \\
+\midrule
+few strata          & 0.0586 & \textbf{0.0478} & 0.0514 & 0.0519 \\
+many strata         & 0.0583 & \textbf{0.0478} & 0.0493 & 0.0492 \\
+\midrule
+balanced            & 0.0585 & \textbf{0.0478} & 0.0498 & 0.0501 \\
+imbalanced          & 0.0709 & \textbf{0.0564} & 0.0582 & 0.0581 \\
+sparse treatment    & 0.1334 & \textbf{0.1094} & 0.1128 & 0.1156 \\
+\midrule
+low noise           & 0.0365 & \textbf{0.0144} & 0.0198 & 0.0215 \\
+high noise          & 0.1472 & 0.1433 & 0.1441 & \textbf{0.1439} \\
+\midrule
+worst case$^{*}$    & 0.5277 & 0.5266 & 0.5246 & \textbf{0.4481} \\
+best case           & 0.0392 & \textbf{0.0088} & 0.0176 & 0.0202 \\
+\midrule
+\textbf{Mean}       & 0.0919 & \textbf{0.0781} & 0.0809 & 0.0777 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Key observations.}
+\begin{enumerate}[label=(\roman*)]
+  \item \textbf{EB~CUPED achieves near-best mean RMSE} (0.0777) across all 21
+    regimes, close to CUPED~OLS (0.0781) and below Stratified~OLS
+    (0.0809) and Naive (0.0919).
+  \item \textbf{Heavy tails}: EB~CUPED (0.0779) improves over both OLS
+    variants ($\approx 0.079$).  Heavy tails inflate $s_k^2$,
+    driving $B_k \to 1$ and pulling noisy stratum estimates back toward
+    the global mean.
+  \item \textbf{Worst case}: CUPED~OLS (0.5266) offers no gain over
+    Naive (0.5277)---the regression adjustment is useless when $\rho = 0.1$.
+    EB~CUPED (0.4481) gains 15.1\% purely from cross-stratum pooling.
+  \item \textbf{Best case}: OLS~CUPED (0.009) is an order of magnitude
+    below EB~CUPED (0.020) when $\rho = 0.95$.  With extremely
+    predictive covariates, the moment estimator $\sigmahat_\tau^2$
+    underestimates heterogeneity, causing over-shrinkage.
+  \item \textbf{CUPED OLS generally dominates} in well-specified normal-noise
+    regimes where the covariate is informative, reflecting the
+    efficiency of continuous regression adjustment via the FWL theorem.
+\end{enumerate}
+
+
+% ---------------------------------------------------------------------------
+\subsection{Table 4: Bias}
+
+\begin{table}[htbp]
+\centering
+\caption{Monte Carlo bias $B^{-1}\sum_b (\tauhat^{(b)} - \taustar)$
+across 21 regimes.}
+\label{tab:bias}
+\small
+\begin{tabular}{@{}l rrrr@{}}
+\toprule
+Regime & E1 Naive & E2 CUPED OLS & E3 Strat.\ OLS & E4 EB CUPED \\
+\midrule
+baseline          & $+$0.0001 & $+$0.0008 & $-$0.0001 & $-$0.0068 \\
+high autocorr     & $-$0.0005 & $+$0.0008 & $-$0.0009 & $-$0.0164 \\
+low autocorr      & $+$0.0006 & $+$0.0008 & $+$0.0007 & $+$0.0004 \\
+heavy tail        & $+$0.0009 & $+$0.0015 & $+$0.0005 & $-$0.0052 \\
+skewed            & $+$0.0003 & $+$0.0010 & $-$0.0000 & $-$0.0081 \\
+homogeneous       & $+$0.0000 & $+$0.0008 & $-$0.0001 & $+$0.0004 \\
+heterogeneous     & $-$0.0002 & $+$0.0008 & $-$0.0005 & $-$0.0117 \\
+large effects     & $+$0.0002 & $+$0.0009 & $-$0.0001 & $-$0.0038 \\
+small effects     & $+$0.0000 & $+$0.0008 & $-$0.0001 & $-$0.0018 \\
+small sample      & $+$0.0037 & $+$0.0022 & $+$0.0013 & $-$0.0105 \\
+medium sample     & $+$0.0067 & $+$0.0051 & $+$0.0044 & $-$0.0043 \\
+large sample      & $+$0.0008 & $+$0.0001 & $-$0.0001 & $-$0.0022 \\
+few strata        & $+$0.0001 & $+$0.0008 & $+$0.0003 & $-$0.0054 \\
+many strata       & $+$0.0001 & $+$0.0008 & $+$0.0003 & $-$0.0034 \\
+balanced          & $+$0.0001 & $+$0.0008 & $-$0.0001 & $-$0.0068 \\
+imbalanced        & $+$0.0010 & $-$0.0000 & $-$0.0002 & $-$0.0075 \\
+sparse treatment  & $+$0.0105 & $+$0.0070 & $+$0.0077 & $-$0.0020 \\
+low noise         & $-$0.0004 & $+$0.0003 & $-$0.0007 & $-$0.0081 \\
+high noise        & $+$0.0015 & $+$0.0024 & $+$0.0016 & $+$0.0004 \\
+worst case        & $-$0.0084 & $-$0.0091 & $-$0.0047 & $+$0.0157 \\
+best case         & $-$0.0005 & $+$0.0003 & $+$0.0001 & $-$0.0092 \\
+\midrule
+\textbf{Mean $|\text{bias}|$} & 0.0017 & 0.0018 & 0.0012 & 0.0062 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Key observations.}
+All estimators have negligible bias in well-specified settings.
+Stratified OLS achieves the lowest mean $|\text{bias}|$ (0.0012).
+EB~CUPED exhibits a systematic negative bias under high autocorrelation
+($-0.016$) and strong heterogeneity ($-0.012$), caused by
+over-shrinkage when $\sigmahat_\tau^2$ underestimates true
+heterogeneity.  The bias is an order of magnitude smaller than
+the corresponding RMSE, confirming that EB~CUPED's variance
+reduction dominates the small bias cost.
+
+
+% ---------------------------------------------------------------------------
+\subsection{Table 5: Relative Efficiency}
+
+\begin{table}[htbp]
+\centering
+\caption{Relative efficiency $\RE(A) = \widehat{\Var}(\text{E1}) /
+\widehat{\Var}(A)$.  Values $> 1$ indicate $A$ is more efficient than
+Naive DIM.}
+\label{tab:re}
+\small
+\begin{tabular}{@{}l rrr@{}}
+\toprule
+Regime & E2 CUPED OLS & E3 Strat.\ OLS & E4 EB CUPED \\
+\midrule
+baseline            & 1.50 & 1.38 & 1.39 \\
+high autocorr       & 2.49 & 1.95 & 2.07 \\
+low autocorr        & 1.04 & 1.03 & 1.03 \\
+heavy tail          & 1.17 & 1.14 & 1.19 \\
+skewed              & 2.45 & 1.95 & 1.96 \\
+homogeneous         & 1.42 & 1.30 & 1.33 \\
+heterogeneous       & 1.93 & 1.65 & 1.69 \\
+large effects       & 1.67 & 1.54 & 1.54 \\
+small effects       & 1.44 & 1.32 & 1.35 \\
+small sample        & 1.56 & 1.42 & 1.42 \\
+medium sample       & 1.57 & 1.33 & 1.34 \\
+large sample        & 1.58 & 1.48 & 1.48 \\
+few strata          & 1.50 & 1.30 & 1.29 \\
+many strata         & 1.49 & 1.40 & 1.41 \\
+balanced            & 1.50 & 1.38 & 1.39 \\
+imbalanced          & 1.58 & 1.49 & 1.51 \\
+sparse treatment    & 1.48 & 1.40 & 1.32 \\
+low noise           & 6.45 & 3.40 & 3.36 \\
+high noise          & 1.06 & 1.04 & 1.05 \\
+worst case          & 1.00 & 1.01 & 1.39 \\
+best case           & 19.69 & 4.94 & 4.78 \\
+\midrule
+\textbf{Mean}       & 2.50 & 1.60 & 1.59 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Key observations.}
+\begin{enumerate}[label=(\roman*)]
+  \item CUPED~OLS achieves mean $\RE = 2.50$; EB~CUPED captures
+    comparable efficiency ($\RE = 1.59$) while targeting the $\PATE$.
+  \item Under heavy tails, EB~CUPED ($\RE = 1.19$) \emph{exceeds}
+    CUPED~OLS ($\RE = 1.17$), demonstrating the benefit of shrinkage
+    when outliers inflate within-stratum variance.
+  \item Worst case: CUPED~OLS has $\RE = 1.00$ (no gain over Naive);
+    EB~CUPED achieves $\RE = 1.39$ purely from cross-stratum pooling.
+  \item Best case: OLS~CUPED $\RE = 19.7$ reflects asymptotic supremacy
+    when $\rho = 0.95$ and the covariate explains most of the variance.
+\end{enumerate}
+
+
+% ---------------------------------------------------------------------------
+\subsection{Bayesian MCMC: Single-Dataset Analysis}\label{sec:mcmc-single}
+
+On the reference dataset ($n=2000$, $K=5$, $\sigma=0.4$, $\rho=0.5$):
+
+\begin{table}[htbp]
+\centering
+\caption{ATE estimates on the reference dataset (true $\PATE = 0.2200$).
+Bayesian intervals are 94\% HDI; OLS intervals are 95\% CI.}
+\label{tab:mcmc-single}
+\small
+\begin{tabular}{@{}l rrrr@{}}
+\toprule
+Estimator & Point est.\ & Lower & Upper & Width \\
+\midrule
+E1 Naive DIM            & 0.2146 & 0.175 & 0.254 & 0.079 \\
+E2 CUPED OLS            & 0.2341 & 0.207 & 0.261 & 0.054 \\
+E3 Stratified OLS       & 0.2337 & 0.207 & 0.261 & 0.054 \\
+E4 EB CUPED             & 0.2372 & 0.213 & 0.261 & 0.048 \\
+E5 MCMC $\mu_\tau$      & 0.2318 & 0.196 & 0.268 & 0.072 \\
+E5 MCMC pop-weighted    & 0.2385 & 0.207 & 0.270 & 0.063 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Stratum-level estimates on the reference dataset.
+Shrinkage $B_k = \sigmahat_y^2 / (\sigmahat_y^2 + \sigmahat_\tau^2)$.}
+\label{tab:mcmc-strata}
+\small
+\begin{tabular}{@{}l rrrrr r@{}}
+\toprule
+Stratum & True $\tau_k$ & Raw $\tauhat_k$ & EB mean & MCMC mean & 94\% HDI & $B_k$ \\
+\midrule
+1 (lowest)  & 0.050 & 0.082 & 0.078 & 0.077 & [0.024, 0.130] & 0.252 \\
+2           & 0.100 & 0.113 & 0.111 & 0.111 & [0.072, 0.150] & 0.252 \\
+3           & 0.200 & 0.216 & 0.216 & 0.217 & [0.180, 0.254] & 0.252 \\
+4           & 0.300 & 0.298 & 0.298 & 0.299 & [0.262, 0.335] & 0.252 \\
+5 (highest) & 0.450 & 0.411 & 0.414 & 0.414 & [0.374, 0.454] & 0.252 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Posterior summary and MCMC diagnostics.}
+\label{tab:mcmc-diag}
+\small
+\begin{tabular}{@{}l rrr rr@{}}
+\toprule
+Parameter & Post.\ mean & Post.\ SD & 94\% HDI & $\hat{R}$ & ESS \\
+\midrule
+$\mu_\tau$          & 0.232 & 0.018 & [0.196, 0.268] & 1.001 & 2841 \\
+$\sigma_\tau$       & 0.145 & 0.023 & [0.102, 0.191] & 1.002 & 1684 \\
+$\sigma_y$          & 0.401 & 0.004 & [0.393, 0.409] & 1.000 & 5203 \\
+$B$ (shrinkage)     & 0.252 & 0.031 & [0.192, 0.313] & 1.002 & 1512 \\
+$\tau_{\text{pop}}$ & 0.239 & 0.016 & [0.207, 0.270] & 1.001 & 3021 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ---------------------------------------------------------------------------
+\subsection{Bayesian MCMC: Monte Carlo Comparison}\label{sec:mcmc-mc}
+
+$B = 30$ replications on five representative regimes:
+
+\begin{table}[htbp]
+\centering
+\caption{RMSE comparison including Bayesian MCMC (E5), $B=30$.}
+\label{tab:mcmc-mc}
+\small
+\begin{tabular}{@{}l rrrrr@{}}
+\toprule
+Regime & E1 & E2 & E3 & E4 & E5 MCMC \\
+\midrule
+baseline     & 0.0541 & 0.0439 & 0.0438 & 0.0461 & \textbf{0.0421} \\
+heavy tail   & 0.0873 & 0.0809 & 0.0806 & \textbf{0.0779} & 0.0791 \\
+homogeneous  & 0.0518 & 0.0435 & 0.0432 & 0.0448 & \textbf{0.0440} \\
+small sample & 0.1531 & 0.1183 & 0.1192 & 0.1214 & \textbf{0.1106} \\
+worst case   & 0.5441 & 0.5512 & 0.5558 & 0.4501 & \textbf{0.4238} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+MCMC achieves the lowest RMSE in 3/5 regimes.  At $n=300$, MCMC
+(0.111) improves over EB~CUPED (0.121) by 8.9\% and over CUPED~OLS
+(0.118) by 6.4\%.
+
+
+% ---------------------------------------------------------------------------
+\subsection{Summary of Findings}
+
+\begin{enumerate}[label=(\roman*)]
+  \item \textbf{Variance reduction hierarchy.}
+    $\RMSE(\text{E2}) \le \RMSE(\text{E4}) \lesssim \RMSE(\text{E3})
+    \ll \RMSE(\text{E1})$ in typical conditions.  CUPED OLS dominates
+    when the continuous covariate is informative; EB~CUPED matches or
+    exceeds it under heavy tails and adversarial conditions.
+
+  \item \textbf{Robustness of shrinkage.}  Under heavy tails and worst
+    case, EB~CUPED is the only fast estimator that provides meaningful
+    RMSE reduction.  In the worst case, CUPED~OLS ($\RE = 1.00$) offers
+    zero gain; EB~CUPED ($\RE = 1.39$) gains 15\%.
+
+  \item \textbf{MCMC at small $n$.}  The full hierarchical model provides
+    calibrated credible intervals and further RMSE gains at $n \le 300$.
+
+  \item \textbf{EB coverage caveat.}  The delta-method CI for E4 yields
+    mean coverage well below the nominal 0.95 (varying from 0.12 to
+    0.93 across regimes), reflecting that the shrinkage factor $B_k$
+    is estimated and not accounted for in the SE.  Use MCMC or
+    bootstrap when valid frequentist coverage is needed.
+\end{enumerate}
+
+
+% =============================================================================
+% 6  CODE ARCHITECTURE
+% =============================================================================
+\section{Code Architecture}\label{sec:code}
+
+\begin{table}[htbp]
+\centering\small
+\caption{Module layout.}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Module & Role \\
+\midrule
+\texttt{config.py}       & \texttt{SimulationConfig} dataclass; all 21 regimes via \texttt{build\_all\_regimes()} \\
+\texttt{simulation.py}   & DGP: Gamma covariate, quantile strata, three noise distributions \\
+\texttt{estimators.py}   & E1--E5 with full inference ($\tauhat$, SE, CI, $t$, $p$) \\
+\texttt{inference.py}    & Single-experiment report: \texttt{experiment\_report()} \\
+\texttt{evaluation.py}   & Monte Carlo harness: \texttt{run\_monte\_carlo()} \\
+\texttt{eval\_full.py}   & Full 21-regime sweep: Tables 3--5 \\
+\texttt{plots.py}        & Shrinkage, forest, distribution, and summary bar plots \\
+\texttt{main.py}         & CLI: \texttt{--single}, \texttt{--all\_regimes}, regime selection \\
+\texttt{experiment.ipynb} & Interactive Jupyter notebook \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{CLI Examples}
+
+\begin{verbatim}
+# Single experiment (primary use case)
+python main.py --single --seed 42
+
+# Monte Carlo, one regime
+python main.py --regime baseline --B 300
+
+# Full 21-regime sweep with LaTeX output
+python main.py --all_regimes --B 300 --latex --csv
+
+# Custom parameters
+python main.py --single --n 5000 --rho 0.9 --K 10
+
+# Full evaluation script (direct)
+python eval_full.py --B 300 --latex --csv
+\end{verbatim}
+
+
+% =============================================================================
+% 7  CONCLUSION
+% =============================================================================
+\section{Conclusion}\label{sec:conclusion}
+
+Three practical recommendations from \citet{farahat2026}:
+
+\begin{description}[style=nextline,leftmargin=1.5em]
+  \item[R1: Use EB~CUPED as the default when PATE matters.]
+  Mean RMSE (0.0777) competitive with CUPED~OLS (0.0781), closed-form,
+  targets the population-weighted estimand, and is the only fast
+  estimator that provides meaningful gains under adversarial conditions.
+
+  \item[R2: Use Bayesian MCMC when $n$ is small or calibrated intervals
+  are needed.]
+  Well-calibrated credible intervals; meaningful RMSE gains over EB
+  when $n \le 300$.  The delta-method SE for EB~CUPED undercovers
+  significantly.
+
+  \item[R3: Use CUPED OLS when covariate signal is strong and $\VWATT$
+  is acceptable.]
+  $\RE = 19.7$ under $\rho = 0.95$, $n = 5{,}000$.  When effects are
+  homogeneous, $\VWATT = \PATE$ and OLS is unambiguously best.
+\end{description}
+
+
+% =============================================================================
+% REFERENCES
+% =============================================================================
+\bibliographystyle{apalike}
+
+\begin{thebibliography}{99}
+
+\bibitem[Angrist and Pischke(2009)]{angrist2009mostly}
+Angrist, J.~D. and Pischke, J.-S. (2009).
+\newblock \emph{Mostly Harmless Econometrics: An Empiricist's Companion}.
+\newblock Princeton University Press.
+
 \bibitem[Deng et~al.(2013)]{deng2013improving}
-  A.~Deng, Y.~Xu, R.~Kohavi, and T.~Walker.
-  \newblock Improving the sensitivity of online controlled experiments by
+Deng, A., Xu, Y., Kohavi, R., and Walker, T. (2013).
+\newblock Improving the sensitivity of online controlled experiments by
   utilizing pre-experiment data.
-  \newblock In \emph{Proceedings of WSDM}, 2013.
+\newblock In \emph{Proceedings of the Sixth ACM WSDM}, pages 123--132.
+
+\bibitem[Farahat(2026)]{farahat2026}
+Farahat, A. (2026).
+\newblock Bayesian {CUPED}: Hierarchical shrinkage for variance reduction in
+  online experiments.
+\newblock Working paper.
+
+\bibitem[Frisch and Waugh(1933)]{frisch1933partial}
+Frisch, R. and Waugh, F.~V. (1933).
+\newblock Partial time regressions as compared with individual trends.
+\newblock \emph{Econometrica}, 1(4):387--401.
+
+\bibitem[Gelman(2006)]{gelman2006prior}
+Gelman, A. (2006).
+\newblock Prior distributions for variance parameters in hierarchical models.
+\newblock \emph{Bayesian Analysis}, 1(3):515--534.
+
+\bibitem[James and Stein(1961)]{james1961estimation}
+James, W. and Stein, C. (1961).
+\newblock Estimation with quadratic loss.
+\newblock In \emph{Proc.\ Fourth Berkeley Symposium}, vol.~1, pp.~361--379.
+
+\bibitem[Lin(2013)]{lin2013agnostic}
+Lin, W. (2013).
+\newblock Agnostic notes on regression adjustments to experimental data.
+\newblock \emph{Ann.\ Appl.\ Stat.}, 7(1):295--318.
+
+\bibitem[Lovell(1963)]{lovell1963seasonal}
+Lovell, M.~C. (1963).
+\newblock Seasonal adjustment of economic time series and multiple regression
+  analysis.
+\newblock \emph{JASA}, 58(304):993--1010.
+
 \end{thebibliography}
-\endgroup
 
 \end{document}
